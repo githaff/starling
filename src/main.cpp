@@ -2,261 +2,183 @@
 #include <Wire.h>
 #include "Adafruit_TinyUSB.h"
 
-#define SDP_ADDR 0x25  // 7-bit I2C address
+/* --------- Config --------- */
+#define SDP_ADDR 0x25    /* 7-bit I2C address */
+#define I2C_HZ 400000
 
-// ---- Sensirion CRC-8 (poly 0x31, init 0xFF) ----
-static uint8_t sdp_crc8(uint8_t b1, uint8_t b2) {
-  uint8_t crc = 0xFF;
-  crc ^= b1;
-  for (int i=0;i<8;i++) crc = (crc & 0x80) ? (crc << 1) ^ 0x31 : (crc << 1);
-  crc ^= b2;
-  for (int i=0;i<8;i++) crc = (crc & 0x80) ? (crc << 1) ^ 0x31 : (crc << 1);
-  return crc;
+#define CMD_ENTER_MODE 0x367C
+#define CMD_READ_PRODUCTID 0xE102
+#define CMD_START_CONT 0x361E
+
+#define SERIAL_BAUD 115200
+
+#define HEARTBEAT_MS 100
+#define READ_PERIOD_MS 20
+#define PRINT_THRESHOLD_PA 100.0f
+
+#define AWAIT_SERIAL
+
+/* --------- Sensirion CRC-8 (poly 0x31, init 0xFF) --------- */
+static uint8_t sdp_crc8(uint8_t msb, uint8_t lsb)
+{
+	uint8_t crc = 0xFF;
+	int i;
+
+	crc ^= msb;
+	for (i = 0; i < 8; i++)
+		crc = (crc & 0x80) ? (uint8_t)((crc << 1) ^ 0x31) : (uint8_t)(crc << 1);
+
+	crc ^= lsb;
+	for (i = 0; i < 8; i++)
+		crc = (crc & 0x80) ? (uint8_t)((crc << 1) ^ 0x31) : (uint8_t)(crc << 1);
+
+	return crc;
 }
 
-// ---- Write a 16-bit command; repeated_start=false sends STOP, true keeps bus for next read ----
-static bool sdp_write_cmd(uint16_t cmd, bool repeated_start=false) {
-  Wire.beginTransmission(SDP_ADDR);
-  Wire.write((uint8_t)(cmd >> 8));
-  Wire.write((uint8_t)(cmd & 0xFF));
-  uint8_t err = Wire.endTransmission(!repeated_start);  // false -> repeated START
-  return err == 0;
+/* --------- I2C helpers --------- */
+static bool sdp_write_cmd(uint16_t cmd, bool repeated_start)
+{
+	Wire.beginTransmission(SDP_ADDR);
+	Wire.write((uint8_t)(cmd >> 8));
+	Wire.write((uint8_t)(cmd & 0xFF));
+	/* endTransmission(stop = !repeated_start) */
+	return Wire.endTransmission(!repeated_start) == 0;
 }
 
-// ---- Read N 16-bit words, each followed by a CRC byte ----
-static int sdp_read_words(uint8_t n_words, uint16_t* out) {
-  const uint8_t need = n_words * 3;
-  uint8_t got = Wire.requestFrom(SDP_ADDR, need);
-  if (got != need) return 0;
+static bool sdp_read_words(uint8_t n_words, uint16_t *out)
+{
+	const uint8_t need = n_words * 3;
+	uint8_t msb, lsb, crc;
+	uint8_t i;
 
-  int ok = 0;
-  for (uint8_t i=0; i<n_words; ++i) {
-    uint8_t msb = Wire.read();
-    uint8_t lsb = Wire.read();
-    uint8_t crc = Wire.read();
-    if (sdp_crc8(msb, lsb) != crc) {
-      // drain remaining bytes to keep Wire state clean
-      while (Wire.available()) (void)Wire.read();
-      return ok;
-    }
-    out[i] = ((uint16_t)msb << 8) | lsb;
-    ok++;
-  }
-  return ok;
+	if (Wire.requestFrom(SDP_ADDR, need) != need)
+		return false;
+
+	for (i = 0; i < n_words; i++) {
+		msb = Wire.read();
+		lsb = Wire.read();
+		crc = Wire.read();
+
+		if (sdp_crc8(msb, lsb) != crc) {
+			while (Wire.available())
+				(void)Wire.read();
+			return false;
+		}
+		out[i] = ((uint16_t)msb << 8) | lsb;
+	}
+
+	return true;
 }
 
-void setup() {
-  pinMode(LED_BUILTIN, OUTPUT);
+/* --------- utils --------- */
+static void heartbeat_tick(void)
+{
+	static uint32_t t0;
+	uint32_t now = millis();
 
-  // USB CDC (you already have this working)
-  TinyUSBDevice.begin();
-  while (!TinyUSBDevice.mounted()) { delay(10); }
-  Serial.begin(115200);
-  while (!Serial) { /* block until DTR */ }
-
-  // Optional UART (if you also want Serial1 logs)
-  Serial1.setPins(D7, D6);
-  Serial1.begin(115200);
-
-  // I2C
-  Wire.begin();              // XIAO nRF52840: D4=SDA, D5=SCL
-  Wire.setClock(400000);
-
-  Serial.println("Hello, world!");
-
-  // --- Product ID sequence you’re using: 0x367C then read via 0xE102 ---
-  // Enter/prepare command mode:
-  if (!sdp_write_cmd(0x367C)) {
-    Serial.println("FAIL: 0x367C");
-  }
-
-  // Send the "read product ID" command with a repeated START, then read 6 words (18 bytes)
-  if (!sdp_write_cmd(0xE102, true)) {
-    Serial.println("FAIL: 0xE102");
-  } else {
-    uint16_t w[6];
-    int n = sdp_read_words(6, w);   // 6 words = 12 data bytes + 6 CRC = 18 bytes total
-    Serial.print("Product ID words ("); Serial.print(n); Serial.println("):");
-    for (int i=0;i<n;i++) {
-      Serial.print("  w"); Serial.print(i); Serial.print(" = 0x");
-      if (w[i] < 0x1000) Serial.print('0');
-      if (w[i] < 0x100)  Serial.print('0');
-      if (w[i] < 0x10)   Serial.print('0');
-      Serial.println(w[i], HEX);
-    }
-  }
-
-  // --- Start continuous differential-pressure measurement (your 0x361E) ---
-  if (!sdp_write_cmd(0x361E)) {
-    Serial.println("FAIL: start cont meas (0x361E)");
-  } else {
-    Serial.println("Continuous measurement started (0x361E)");
-  }
-
-  // Give first sample time to appear
-  delay(10);
+	if (now - t0 >= HEARTBEAT_MS) {
+		t0 = now;
+		digitalWrite(LED_BUILTIN, !digitalRead(LED_BUILTIN));
+	}
 }
 
-void loop() {
-  // Blink so we know firmware runs
-  digitalWrite(LED_BUILTIN, !digitalRead(LED_BUILTIN));
-//  delay(100);
+static void print_hex_words(const uint16_t *w, size_t n)
+{
+	size_t i;
 
-  // Many SDP8xx continuous modes return 3 words: dp, temperature/scale, status
-  uint16_t words[3];
-  int n = sdp_read_words(3, words);
-  if (n == 3) {
-    int16_t dp_raw = (int16_t)words[0];  // signed 16-bit
-    // For typical diff-pressure modes, scale is 1 Pa/LSB (confirm in your command’s table)
-    float dp_pa = (float)dp_raw;
-
-//    Serial.print("dp_raw="); Serial.print(dp_raw);
-//    Serial.print("  dp[Pa]="); Serial.print(dp_pa);
-//    Serial.print("  w1=0x"); Serial.print(words[1], HEX);
-//    Serial.print("  w2=0x"); Serial.println(words[2], HEX);
-
-//    Serial.println(dp_pa);
-//    Serial.flush();
-
-    if (dp_pa > 100.0) {
-      Serial.println(dp_pa);
-      Serial.flush();
-    }
-
-  } else if (n == 0) {
-    Serial.println("read: short (no data)");  // sensor not ready / bus issue
-  } else {
-    Serial.print("read: partial ("); Serial.print(n); Serial.println(" words)");
-  }
-
-  delay(20);  // polling rate; tune per datasheet update rate
+	for (i = 0; i < n; i++) {
+		Serial.print("  w");
+		Serial.print((int)i);
+		Serial.print(" = 0x");
+		if (w[i] < 0x1000) Serial.print('0');
+		if (w[i] < 0x0100) Serial.print('0');
+		if (w[i] < 0x0010) Serial.print('0');
+		Serial.println(w[i], HEX);
+	}
 }
 
+void setup(void)
+{
+	int i;
+	uint16_t w[6];
 
+	pinMode(LED_BUILTIN, OUTPUT);
+	digitalWrite(LED_BUILTIN, HIGH);
 
+	for (int i = 0; i < 10; i++) {
+		digitalWrite(LED_BUILTIN, HIGH);
+		delay(50);
+		digitalWrite(LED_BUILTIN, LOW);
+		delay(50);
+	}
+	digitalWrite(LED_BUILTIN, HIGH);
 
-//#include <Arduino.h>
-//#include <Wire.h>
-//#include "Adafruit_TinyUSB.h"
-//
-//#define I2C_ADDR 0x25
-//
-//
-//void sendCommand(uint16_t cmd) {
-//  Wire.beginTransmission(I2C_ADDR);
-//
-//  // high byte first
-//  Wire.write((cmd >> 8) & 0xFF);
-//  Wire.write(cmd & 0xFF);
-//
-//  uint8_t err = Wire.endTransmission();  // actually sends STOP
-//  if (err != 0) {
-//    Serial.println("FAIL TO SEND I2C COMMAND");
-//    // handle error: 0 = success
-//  }
-//}
-//
-//void setup() {
-//  pinMode(LED_BUILTIN, OUTPUT);   // LED_BUILTIN resolves to D13
-//
-//  Wire.begin();
-//  Wire.setClock(400000);
-//
-//  TinyUSBDevice.begin();
-//  while (!TinyUSBDevice.mounted()) { delay(10); }
-//
-//  Serial.begin(115200);
-//  while (!Serial) { ; }
-//  Serial.println("Hello, world!");
-//  Serial.flush();
-//
-////  Serial1.setPins(D7, D6);
-////  Serial1.begin(115200);
-////  Serial1.println("Hello, world! Serial1");
-////  Serial1.flush();
-//
-//  sendCommand(0x367c);
-//  sendCommand(0xe102);
-//
-//  // 2) request 18 bytes back
-//  uint8_t count = Wire.requestFrom(I2C_ADDR, (uint8_t)18);
-//  if (count != 18) {
-//    Serial.print("I2C read short: got ");
-//    Serial.println(count);
-//    return;
-//  }
-//
-//    // 3) read and print
-//  Serial.print("Sensor product ID: ");
-//  while (Wire.available()) {
-//    uint8_t b = Wire.read();
-//    Serial.print("0x");
-//    Serial.print(b, HEX);
-//    Serial.print(" ");
-//  }
-//  Serial.println();
-//
-//  // Continuous measurement
-//  // Maybe makes sense to get 'average till read' instead.
-//  sendCommand(0x361e);
-//
-//}
-//
-//int16_t readRaw() {
-//  Wire.requestFrom(I2C_ADDR, (uint8_t)9);  // 2 data bytes + 1 CRC
-//  if (Wire.available() < 9) {
-//    Serial.println("I2C read short");
-//    return 0;
-//  }
-//
-//  uint8_t msb = Wire.read();
-//  uint8_t lsb = Wire.read();
-//  uint8_t crc = Wire.read();  // unused for now
-//
-//  uint8_t msb_t = Wire.read();
-//  uint8_t lsb_t = Wire.read();
-//  uint8_t crc_t = Wire.read();  // unused for now
-//
-//  uint8_t msb_s = Wire.read();
-//  uint8_t lsb_s = Wire.read();
-//  uint8_t crc_s = Wire.read();  // unused for now
-//
-//  int16_t raw = (int16_t)((msb_t << 8) | lsb_t);
-//  return raw;
-//}
-//
-//void loop() {
-//  static int x = 0;
-//  digitalWrite(LED_BUILTIN, HIGH);  // turn LED on
-//  delay(100);
-//  digitalWrite(LED_BUILTIN, LOW);   // turn LED off
-//  delay(100);
-//  Serial.print("Looped ");
-//  Serial.println(x++);
-//  Serial.flush();
-//
-//  Serial1.print("Serial ");
-//  Serial1.println(x);
-//  Serial1.flush();
-//
-////int16_t p = readPressureRaw();
-////float pressure_hPa = (float)p;
-////
-////Serial.println(p);
-////Serial.println(pressure_hPa);
-//
-//  uint8_t count = Wire.requestFrom(I2C_ADDR, (uint8_t)3);
-//  Serial.print(count);
-//  Serial.print(" : ");
-//
-//  Serial.print("Sensor product ID: ");
-//  while (Wire.available()) {
-//    uint8_t b = Wire.read();
-//    Serial.print("0x");
-//    if (b < 0x10) Serial1.print("0");
-//    Serial.print(b, HEX);
-//    Serial.print(" ");
-//  }
-//  Serial.println();
-//}
-//
+	/* USB + Serial */
+	TinyUSBDevice.begin();
+	while (!TinyUSBDevice.mounted()) {
+		delay(10);
+	}
+	Serial.begin(SERIAL_BAUD);
+
+#ifdef AWAIT_SERIAL
+	/* Wait indefinitely for DTR (Serial) */
+	while (!Serial) {
+		delay(50);
+		digitalWrite(LED_BUILTIN, !digitalRead(LED_BUILTIN));
+	}
+#endif
+
+	/* I2C */
+	Wire.begin();             /* XIAO nRF52840: D4=SDA, D5=SCL */
+	Wire.setClock(I2C_HZ);
+
+	Serial.println("SDP init...");
+
+	/* Read Product ID: enter mode -> issue read cmd (repeated START) -> read 6 words */
+	if (!sdp_write_cmd(CMD_ENTER_MODE, false)) {
+		Serial.println("FAIL: enter mode (0x367C)");
+	} else if (!sdp_write_cmd(CMD_READ_PRODUCTID, true)) {
+		Serial.println("FAIL: read product ID cmd (0xE102)");
+	} else if (sdp_read_words(6, w)) {
+		Serial.println("Product ID words:");
+		print_hex_words(w, 6);
+	} else {
+		Serial.println("FAIL: product ID read/CRC");
+	}
+
+	/* Start continuous measurement */
+	if (sdp_write_cmd(CMD_START_CONT, false))
+		Serial.println("Continuous measurement started (0x361E)");
+	else
+		Serial.println("FAIL: start continuous (0x361E)");
+
+	delay(10);                /* let first sample appear */
+}
+
+void loop(void)
+{
+	static uint32_t t_last;
+	uint32_t now = millis();
+	uint16_t words[3];
+	int16_t dp_raw;
+	float dp_pa;
+
+	heartbeat_tick();
+
+	if (now - t_last < READ_PERIOD_MS)
+		return;
+	t_last = now;
+
+	/* Typical frame: dp, aux (temp/scale), status */
+	if (!sdp_read_words(3, words))
+		return;
+
+	dp_raw = (int16_t)words[0];
+	/* Many modes are 1 Pa/LSB; verify in datasheet for your command. */
+	dp_pa = (float)dp_raw;
+
+	if (dp_pa > PRINT_THRESHOLD_PA) {
+		Serial.println(dp_pa);
+		Serial.flush();
+	}
+}
