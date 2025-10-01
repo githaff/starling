@@ -1,6 +1,6 @@
 #if 1
 
-//#define TX
+#define TX
 
 
 
@@ -14,7 +14,6 @@
 static nrf_to_nrf	radio;
 static uint8_t		address[][6] = { "1Node", "2Node" };
 static bool		radio_number = 0;	/* 0 → TX to "1Node" */
-static bool		role = true;		/* TX */
 static float		payload = 0.0f;
 
 void setup(void)
@@ -44,34 +43,48 @@ void setup(void)
 	Serial.print("radioNumber = ");
 	Serial.println((int)radio_number);
 
+	radio.begin();
 	radio.setPALevel(NRF_PA_LOW);		/* same as example */
-	radio.setPayloadSize(sizeof(payload));	/* 4 bytes */
+	radio.setDataRate(NRF_2MBPS);
+	radio.setChannel(80);
+	radio.setCRCLength(NRF_CRC_DISABLED);	/* disable CRC */
+	radio.setAutoAck(true);		/* enable ACK with payloads */
+	radio.enableAckPayload();
+	radio.enableDynamicPayloads();		/* enable dynamic payloads */
 
-	radio.openWritingPipe(address[radio_number]);     /* pipe 0 */
-	radio.openReadingPipe(1, address[!radio_number]); /* pipe 1 (unused in TX) */
-
-	radio.stopListening();	/* TX mode */
+	radio.openWritingPipe(address[0]);     /* TX writes to "1Node" */
+	radio.stopListening();
+//	radio.startListening();
 }
 
 void loop(void)
 {
+	float ack_payload = 0.0f;
+
+	digitalWrite(LED_STATUS, HIGH);
+
 	unsigned long t0 = micros();
 	bool ok = radio.write(&payload, sizeof(float));	/* waits for ACK */
+	
+	// Check for ACK payload after successful transmission
+	if (ok && radio.available()) {
+		radio.read(&ack_payload, sizeof(ack_payload));
+	}
 	unsigned long t1 = micros();
 
 	if (ok) {
 		Serial.print("Transmission successful! Time to transmit = ");
 		Serial.print(t1 - t0);
 		Serial.print(" us. Sent: ");
-		Serial.println(payload, 2);
+		Serial.print(payload, 2);
+		Serial.print(" Received: ");
+		Serial.println(ack_payload, 2);
 		payload += 0.01f;
 
-		digitalWrite(LED_STATUS, HIGH);
 		delay(500);
 		digitalWrite(LED_STATUS, LOW);
 	} else {
 		Serial.println("Transmission failed or timed out");
-		digitalWrite(LED_STATUS, HIGH);
 		delay(100);
 		digitalWrite(LED_STATUS, LOW);
 		delay(100);
@@ -92,13 +105,12 @@ void loop(void)
 static nrf_to_nrf	radio;
 static uint8_t		address[][6] = { "1Node", "2Node" };
 static bool		radio_number = 1;	/* 1 → listens for "1Node" on pipe 1 */
-static bool		role = false;		/* RX */
 static float		payload = 0.0f;
 
 void setup(void)
 {
 	Serial.begin(115200);
-	while (!Serial) { }
+	delay(2000);	
 
 	pinMode(LED_STATUS, OUTPUT);
 	delay(1000);	
@@ -122,32 +134,46 @@ void setup(void)
 	Serial.print("radioNumber = ");
 	Serial.println((int)radio_number);
 
+	radio.begin();
 	radio.setPALevel(NRF_PA_LOW);		/* same as example */
-	radio.setPayloadSize(sizeof(payload));	/* 4 bytes */
+	radio.setDataRate(NRF_2MBPS);
+	radio.setChannel(80);
+	radio.setCRCLength(NRF_CRC_DISABLED);	/* disable CRC */
+	radio.setAutoAck(true);		/* enable ACK with payloads */
+	radio.enableAckPayload();
+	radio.enableDynamicPayloads();		/* enable dynamic payloads */
 
-	radio.openWritingPipe(address[radio_number]);     /* pipe 0 (not used in RX) */
-	radio.openReadingPipe(1, address[!radio_number]); /* pipe 1 → "1Node" */
+	radio.openReadingPipe(1, address[0]); /* RX listens on "1Node" */
+	float reply_val = 108.0f;
+	radio.writeAckPayload(1, &reply_val, sizeof(reply_val));
 	radio.startListening();				/* RX mode */
 }
 
 void loop(void)
 {
 	uint8_t pipe;
-	if (radio.available(&pipe)) {
-		uint8_t bytes = radio.getPayloadSize();
-		radio.read(&payload, bytes);
+	float ack_payload;
 
-		digitalWrite(LED_STATUS, HIGH);
-		delay(300);
-		digitalWrite(LED_STATUS, LOW);
+	if (!radio.available(&pipe))
+		return;
 
-		Serial.print("Received ");
-		Serial.print(bytes);
-		Serial.print(" bytes on pipe ");
-		Serial.print(pipe);
-		Serial.print(": ");
-		Serial.println(payload, 2);
-	}
+	radio.read(&payload, sizeof(payload));
+	ack_payload = payload + 88.0f;
+	
+	// Pre-load the NEXT ACK payload for the next transmission
+	float next_ack = ack_payload + 1.0f;  // or any other value
+	radio.writeAckPayload(pipe, &next_ack, sizeof(next_ack));
+
+	digitalWrite(LED_STATUS, HIGH);
+	delay(300);
+	digitalWrite(LED_STATUS, LOW);
+
+	Serial.print("Received ");
+	Serial.print(payload, 2);
+	Serial.print(" on pipe ");
+	Serial.print(pipe);
+	Serial.print(", sent ACK: ");
+	Serial.println(ack_payload, 2);
 }
 #endif
 
