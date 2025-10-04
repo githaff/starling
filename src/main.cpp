@@ -1,5 +1,3 @@
-//#define TX  // Comment this out for RX device
-
 #include <Arduino.h>
 #include <Wire.h>
 #include "Adafruit_TinyUSB.h"
@@ -8,14 +6,13 @@
 #include "nrf.h"
 #include "nrf_gpio.h"
 #include "nrfx_clock.h"
-//#include "nrf_esb.h"
 #include <nrf_to_nrf.h>
 
 nrf_to_nrf radio;
 
 // Packet structure for TX->RX communication
 struct SensorPacket {
-	float pressure;      // Pressure value in Pa
+	int16_t pressure;      // Pressure value in Pa
 	uint16_t buttons;    // Bitmask of pressed buttons (12 bits used)
 };
 
@@ -24,9 +21,12 @@ struct SensorPacket {
 
 //#define AWAIT_SERIAL
 
-#ifndef _BV
-#define _BV(bit) (1 << (bit)) 
-#endif
+//#ifndef _BV
+//#define _BV(bit) (1 << (bit)) 
+//#endif
+
+#define TX  // Comment this out for RX device
+
 
 #ifdef TX
 // TX-only: I2C sensors
@@ -37,9 +37,17 @@ struct SensorPacket {
 #define CMD_READ_PRODUCTID 0xE102
 #define CMD_START_CONT 0x361E
 
-#define HEARTBEAT_MS 100
-#define READ_PERIOD_MS 20
-#define PRINT_THRESHOLD_PA 100.0f
+#define PRESSURE_THRESHOLD 1000
+
+// Button wiring index
+uint8_t button_idx_mapping[] = {
+	11, 10, 9, 7, 6, 8, 5, 3, 4, 2, 0, 1
+};
+// Measured stable sensor values at normal conditions
+uint8_t button_idle[] = {
+	14, 15, 17, 16, 16, 16, 16, 16, 15, 16, 14, 14
+};
+#define BUTTON_IDLE_TOLERANCE 2
 
 // You can have up to 4 on one i2c bus but one is enough for testing!
 Adafruit_MPR121 cap = Adafruit_MPR121();
@@ -103,6 +111,40 @@ static bool sdp_read_words(uint8_t n_words, uint16_t *out)
 	return true;
 }
 
+/* Read pressure in Pa
+ * Returns 0 if below threshold, -1 on error
+ */
+static int16_t read_pressure()
+{
+	int16_t pressure;
+	uint16_t words[3];
+
+	if (sdp_read_words(3, words)) {
+		pressure = words[0];
+		if (pressure < PRESSURE_THRESHOLD)
+			pressure = 0;
+	} else {
+		pressure = -1;
+	}
+
+	return pressure;
+}
+
+static uint16_t read_buttons()
+{
+	uint16_t buttons = 0;
+	uint16_t state;
+
+	for (uint8_t i = 0; i < 12; i++) {
+		state = cap.filteredData(button_idx_mapping[i]);
+		if ((state < button_idle[i] - BUTTON_IDLE_TOLERANCE) ||
+			(state > button_idle[i] + BUTTON_IDLE_TOLERANCE))
+			buttons |= 1 << i;
+	}
+
+	return buttons;
+}
+
 /* --------- utils --------- */
 static void print_hex_words(const uint16_t *w, size_t n)
 {
@@ -131,19 +173,15 @@ void radio_init()
 	radio.setChannel(80);
 	radio.setCRCLength(NRF_CRC_8);
 	radio.setAutoAck(false);
-	radio.enableDynamicPayloads();  // Enable dynamic payloads
+	radio.enableDynamicPayloads();
 	
 #ifdef TX
 	radio.openWritingPipe(addr);
 	radio.stopListening();
-	Serial.println("Radio: TX mode");
 #else
 	radio.openReadingPipe(1, addr);
 	radio.startListening();
-	Serial.println("Radio: RX mode");
 #endif
-	
-	radio.printDetails();
 }
 
 #ifdef TX
@@ -169,12 +207,6 @@ void setup(void)
 	}
 	digitalWrite(LED_STATUS, HIGH);
 
-//	/* USB + Serial */
-//	TinyUSBDevice.begin();
-//	while (!TinyUSBDevice.mounted()) {
-//		delay(10);
-//	}
-
 	Serial.begin(SERIAL_BAUD);
 #ifdef AWAIT_SERIAL
 	/* Wait indefinitely for DTR (Serial) */
@@ -195,43 +227,31 @@ void setup(void)
 
 #ifdef TX
 	/* I2C - only needed for TX */
-	Wire.begin();             /* XIAO nRF52840: D4=SDA, D5=SCL */
+	Wire.begin();
 	Wire.setClock(I2C_HZ);
 
-	Serial.println("SDP init...");
-
-	/* Read Product ID: enter mode -> issue read cmd (repeated START) -> read 6 words */
-	if (!sdp_write_cmd(CMD_ENTER_MODE, false)) {
-		Serial.println("FAIL: enter mode (0x367C)");
-	} else if (!sdp_write_cmd(CMD_READ_PRODUCTID, true)) {
-		Serial.println("FAIL: read product ID cmd (0xE102)");
-	} else if (sdp_read_words(6, w)) {
-		Serial.println("Product ID words:");
-		print_hex_words(w, 6);
-	} else {
-		Serial.println("FAIL: product ID read/CRC");
+	/* Initialize SDP pressure sensor */
+	if (!sdp_write_cmd(CMD_ENTER_MODE, false) ||
+	    !sdp_write_cmd(CMD_READ_PRODUCTID, true) ||
+	    !sdp_read_words(6, w)) {
+		Serial.println("SDP sensor init failed!");
+	}
+	
+	if (!sdp_write_cmd(CMD_START_CONT, false)) {
+		Serial.println("SDP continuous mode failed!");
 	}
 
-	/* Start continuous measurement */
-	if (sdp_write_cmd(CMD_START_CONT, false))
-		Serial.println("Continuous measurement started (0x361E)");
-	else
-		Serial.println("FAIL: start continuous (0x361E)");
-
-	Serial.println("MPR121 probe init...");
-
+	/* Initialize MPR121 capacitive touch sensor */
 	if (!cap.begin(0x5A)) {
-		Serial.println("MPR121 not found, check wiring?");
+		Serial.println("MPR121 not found!");
 		while (1);
 	}
-	Serial.println("MPR121 found!");
 
-	delay(10);                /* let first sample appear */
+	delay(10);
 #endif
 
-	Serial.println("Initializing radio...");
 	radio_init();
-	Serial.println("Initialization complete");
+	Serial.println("Ready");
 }
 
 #ifdef TX
@@ -241,64 +261,25 @@ void loop(void)
 	static uint32_t t_last = 0;
 	uint32_t now = millis();
 	
-	// Send packet every 1000ms (1 second)
-	if (now - t_last < 1000)
+	// Send packets every 50ms
+	if (now - t_last < 50)
 		return;
 	t_last = now;
 	
 	SensorPacket packet;
-	uint16_t words[3];
-	
-	// Read pressure sensor
-	if (sdp_read_words(3, words)) {
-		int16_t dp_raw = (int16_t)words[0];
-		packet.pressure = (float)dp_raw;  // 1 Pa/LSB
-	} else {
-		packet.pressure = 0.0f;  // Error reading
-	}
-	
-	// Read capacitive touch sensors
-	packet.buttons = 0;
-	for (uint8_t i = 0; i < 12; i++) {
-		uint16_t filtered = cap.filteredData(i);
-		if (filtered < 8) {  // Button pressed when < 8
-			packet.buttons |= (1 << i);
-		}
-	}
-	
-	// Blink LED when sending
-	digitalWrite(LED_STATUS, HIGH);
-	delay(200);
+	packet.pressure = read_pressure();
+	if (packet.pressure == 0)
+		return;
+	packet.buttons = read_buttons();
 	
 	// Send packet
 	bool ok = radio.write(&packet, sizeof(packet));
-	
-	digitalWrite(LED_STATUS, LOW);
-	
-	if (ok) {
-		Serial.print("TX: P=");
-		Serial.print(packet.pressure, 1);
-		Serial.print(" Pa, Buttons=0x");
-		Serial.println(packet.buttons, HEX);
-	} else {
-		Serial.println("TX failed!");
-	}
 }
 
 #else
 // ==================== RX IMPLEMENTATION ====================
 void loop(void)
 {
-	static uint32_t last_check = 0;
-	
-	// Debug: print every 5 seconds that we're checking
-	if (millis() - last_check > 5000) {
-		uint8_t pipe;
-		Serial.print("RX: Checking... available(pipe)=");
-		Serial.println(radio.available(&pipe));
-		last_check = millis();
-	}
-	
 	if (!radio.available())
 		return;
 	
@@ -306,13 +287,13 @@ void loop(void)
 	radio.read(&packet, sizeof(packet));
 	
 	// Print received data
-	Serial.print("RX: Pressure=");
-	Serial.print(packet.pressure, 1);
-	Serial.print(" Pa, Buttons=0x");
+	Serial.print("P=");
+	Serial.print(packet.pressure);
+	Serial.print(" B=0x");
 	Serial.print(packet.buttons, HEX);
-	Serial.print(" [");
 	
-	// Print which buttons are pressed
+	// Print button list
+	Serial.print(" [");
 	bool first = true;
 	for (uint8_t i = 0; i < 12; i++) {
 		if (packet.buttons & (1 << i)) {
@@ -322,10 +303,10 @@ void loop(void)
 		}
 	}
 	Serial.println("]");
-
+	
+	// Brief LED blink on packet received
 	digitalWrite(LED_STATUS, HIGH);
-	delay(100);
+	delayMicroseconds(100);
 	digitalWrite(LED_STATUS, LOW);
-
 }
 #endif
