@@ -3,7 +3,6 @@
 #define TX
 
 
-
 #ifdef TX
 
 #include <Arduino.h>
@@ -14,98 +13,7 @@
 static nrf_to_nrf	radio;
 static uint8_t		address[][6] = { "1Node", "2Node" };
 static bool		radio_number = 0;	/* 0 → TX to "1Node" */
-static float		payload = 0.0f;
-
-void setup(void)
-{
-	Serial.begin(115200);
-	delay(3000);	
-
-	pinMode(LED_STATUS, OUTPUT);
-	delay(1000);	
-	digitalWrite(LED_STATUS, LOW);
-
-	for (int i = 0; i < 10; i++) {
-		digitalWrite(LED_STATUS, HIGH);
-		delay(50);
-		digitalWrite(LED_STATUS, LOW);
-		delay(50);
-	}
-	digitalWrite(LED_STATUS, HIGH);
-
-	if (!radio.begin()) {
-		Serial.println("radio hardware is not responding!!");
-		for (;;)
-			;
-	}
-
-	Serial.println("RF24/examples/GettingStarted");
-	Serial.print("radioNumber = ");
-	Serial.println((int)radio_number);
-
-	radio.begin();
-	radio.setPALevel(NRF_PA_LOW);		/* same as example */
-	radio.setDataRate(NRF_2MBPS);
-	radio.setChannel(80);
-	radio.setCRCLength(NRF_CRC_DISABLED);	/* disable CRC */
-	radio.setAutoAck(true);		/* enable ACK with payloads */
-	radio.enableAckPayload();
-	radio.enableDynamicPayloads();		/* enable dynamic payloads */
-
-	radio.openWritingPipe(address[0]);     /* TX writes to "1Node" */
-	radio.stopListening();
-//	radio.startListening();
-}
-
-void loop(void)
-{
-	float ack_payload = 0.0f;
-
-	digitalWrite(LED_STATUS, HIGH);
-
-	unsigned long t0 = micros();
-	bool ok = radio.write(&payload, sizeof(float));	/* waits for ACK */
-	
-	// Check for ACK payload after successful transmission
-	if (ok && radio.available()) {
-		radio.read(&ack_payload, sizeof(ack_payload));
-	}
-	unsigned long t1 = micros();
-
-	if (ok) {
-		Serial.print("Transmission successful! Time to transmit = ");
-		Serial.print(t1 - t0);
-		Serial.print(" us. Sent: ");
-		Serial.print(payload, 2);
-		Serial.print(" Received: ");
-		Serial.println(ack_payload, 2);
-		payload += 0.01f;
-
-		delay(500);
-		digitalWrite(LED_STATUS, LOW);
-	} else {
-		Serial.println("Transmission failed or timed out");
-		delay(100);
-		digitalWrite(LED_STATUS, LOW);
-		delay(100);
-		digitalWrite(LED_STATUS, HIGH);
-		delay(100);
-		digitalWrite(LED_STATUS, LOW);
-	}
-
-	delay(1000);	/* same pacing as example */
-}
-
-#else
-#include <Arduino.h>
-#include "nrf_to_nrf.h"
-
-#define LED_STATUS	LED_BUILTIN
-
-static nrf_to_nrf	radio;
-static uint8_t		address[][6] = { "1Node", "2Node" };
-static bool		radio_number = 1;	/* 1 → listens for "1Node" on pipe 1 */
-static float		payload = 0.0f;
+static uint32_t		payload = 0;
 
 void setup(void)
 {
@@ -135,45 +43,145 @@ void setup(void)
 	Serial.println((int)radio_number);
 
 	radio.begin();
-	radio.setPALevel(NRF_PA_LOW);		/* same as example */
+	radio.setPALevel(NRF_PA_LOW);
 	radio.setDataRate(NRF_2MBPS);
 	radio.setChannel(80);
-	radio.setCRCLength(NRF_CRC_DISABLED);	/* disable CRC */
-	radio.setAutoAck(true);		/* enable ACK with payloads */
-	radio.enableAckPayload();
-	radio.enableDynamicPayloads();		/* enable dynamic payloads */
+	radio.setCRCLength(NRF_CRC_8);		/* 8-bit CRC */
+	radio.setAutoAck(false);		/* disable ACK - one-way transmission */
+	radio.disableDynamicPayloads();
+	radio.setPayloadSize(sizeof(uint32_t));	/* fixed 4-byte payload */
 
-	radio.openReadingPipe(1, address[0]); /* RX listens on "1Node" */
-	float reply_val = 108.0f;
-	radio.writeAckPayload(1, &reply_val, sizeof(reply_val));
-	radio.startListening();				/* RX mode */
+	radio.openWritingPipe(address[0]);     /* TX writes to "1Node" */
+	radio.stopListening();
 }
 
 void loop(void)
 {
-	uint8_t pipe;
-	float ack_payload;
+	// Send packet once per second
+	bool ok = radio.write(&payload, sizeof(uint32_t));
+	
+	if (ok) {
+		// One long blink for success
+		digitalWrite(LED_STATUS, HIGH);
+		delay(300);
+		digitalWrite(LED_STATUS, LOW);
+		
+		Serial.print("TX sent: ");
+		Serial.println(payload);
+		payload++;
+	} else {
+		// Two short blinks for error
+		digitalWrite(LED_STATUS, HIGH);
+		delay(100);
+		digitalWrite(LED_STATUS, LOW);
+		delay(100);
+		digitalWrite(LED_STATUS, HIGH);
+		delay(100);
+		digitalWrite(LED_STATUS, LOW);
+		
+		Serial.println("TX failed!");
+	}
+}
 
-	if (!radio.available(&pipe))
+#else
+#include <Arduino.h>
+#include "nrf_to_nrf.h"
+
+#define LED_STATUS	LED_BUILTIN
+
+static nrf_to_nrf	radio;
+static uint8_t		address[][6] = { "1Node", "2Node" };
+static bool		radio_number = 1;	/* 1 → listens for "1Node" on pipe 1 */
+static uint32_t		payload = 0;
+
+void setup(void)
+{
+	Serial.begin(115200);
+	delay(2000);	
+
+	pinMode(LED_STATUS, OUTPUT);
+	delay(1000);	
+	digitalWrite(LED_STATUS, LOW);
+
+	for (int i = 0; i < 10; i++) {
+		digitalWrite(LED_STATUS, HIGH);
+		delay(50);
+		digitalWrite(LED_STATUS, LOW);
+		delay(50);
+	}
+	digitalWrite(LED_STATUS, HIGH);
+
+	if (!radio.begin()) {
+		Serial.println("radio hardware is not responding!!");
+		for (;;)
+			;
+	}
+
+	Serial.println("RF24/examples/GettingStarted");
+	Serial.print("radioNumber = ");
+	Serial.println((int)radio_number);
+
+	radio.begin();
+	radio.setPALevel(NRF_PA_LOW);
+	radio.setDataRate(NRF_2MBPS);
+	radio.setChannel(80);
+	radio.setCRCLength(NRF_CRC_8);		/* 8-bit CRC */
+	radio.setAutoAck(false);		/* disable ACK - one-way transmission */
+	radio.disableDynamicPayloads();
+	radio.setPayloadSize(sizeof(uint32_t));	/* fixed 4-byte payload */
+
+	radio.openReadingPipe(1, address[0]); /* RX listens on "1Node" */
+	radio.startListening();			/* RX mode */
+	
+	Serial.println("RX ready - listening");
+}
+
+void loop(void)
+{
+	static uint32_t last_payload = 0xFFFFFFFF;  // Initialize to invalid value
+	
+	if (!radio.available())
 		return;
 
 	radio.read(&payload, sizeof(payload));
-	ack_payload = payload + 88.0f;
 	
-	// Pre-load the NEXT ACK payload for the next transmission
-	float next_ack = ack_payload + 1.0f;  // or any other value
-	radio.writeAckPayload(pipe, &next_ack, sizeof(next_ack));
-
-	digitalWrite(LED_STATUS, HIGH);
-	delay(300);
-	digitalWrite(LED_STATUS, LOW);
-
-	Serial.print("Received ");
-	Serial.print(payload, 2);
-	Serial.print(" on pipe ");
-	Serial.print(pipe);
-	Serial.print(", sent ACK: ");
-	Serial.println(ack_payload, 2);
+	// Check if this is the first packet or if we missed packets
+	if (last_payload == 0xFFFFFFFF) {
+		// First packet ever received
+		digitalWrite(LED_STATUS, HIGH);
+		delay(300);
+		digitalWrite(LED_STATUS, LOW);
+		
+		Serial.print("RX received (first): ");
+		Serial.println(payload);
+		
+	} else if (payload == last_payload + 1) {
+		// Sequential packet - one long blink (success)
+		digitalWrite(LED_STATUS, HIGH);
+		delay(300);
+		digitalWrite(LED_STATUS, LOW);
+		
+		Serial.print("RX received: ");
+		Serial.println(payload);
+		
+	} else {
+		// Missed packet(s) - two short blinks (error)
+		digitalWrite(LED_STATUS, HIGH);
+		delay(100);
+		digitalWrite(LED_STATUS, LOW);
+		delay(100);
+		digitalWrite(LED_STATUS, HIGH);
+		delay(100);
+		digitalWrite(LED_STATUS, LOW);
+		
+		Serial.print("RX received (MISSED): ");
+		Serial.print(payload);
+		Serial.print(" (expected: ");
+		Serial.print(last_payload + 1);
+		Serial.println(")");
+	}
+	
+	last_payload = payload;
 }
 #endif
 
