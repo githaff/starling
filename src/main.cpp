@@ -1,3 +1,5 @@
+#define TX  // Comment this out for RX device
+
 #include <Arduino.h>
 #include <Wire.h>
 #include "Adafruit_TinyUSB.h"
@@ -12,23 +14,30 @@ nrf_to_nrf radio;
 
 // Packet structure for TX->RX communication
 struct SensorPacket {
-	int16_t pressure;      // Pressure value in Pa
-	uint16_t buttons;    // Bitmask of pressed buttons (12 bits used)
+	int16_t pressure;
+	uint8_t note;
 };
 
 /* --------- Config --------- */
 #define SERIAL_BAUD 115200
 
 //#define AWAIT_SERIAL
+#define DEBUG
+
+// Debug macros - only compile when DEBUG is defined
+#ifdef DEBUG
+	#define dbg(x) Serial.print(x)
+	#define dbgln(x) Serial.println(x)
+#else
+	#define dbg(x)
+	#define dbgln(x)
+#endif
 
 //#ifndef _BV
 //#define _BV(bit) (1 << (bit)) 
 //#endif
 
-#define TX  // Comment this out for RX device
 
-
-#ifdef TX
 // TX-only: I2C sensors
 #define SDP_ADDR 0x25    /* 7-bit I2C address */
 #define I2C_HZ 400000
@@ -48,17 +57,63 @@ uint8_t button_idle[] = {
 	14, 15, 17, 16, 16, 16, 16, 16, 15, 16, 14, 14
 };
 #define BUTTON_IDLE_TOLERANCE 2
+#define BUTTONS_TO_NOTE(b11, b10, b9, b8, b7, b6, b5, b4, b3, b2, b1, b0) \
+	((b11 << 11) | (b10 << 10) | (b9 << 9) | (b8 << 8) | (b7 << 7) | (b6 << 6) | (b5 << 5) | (b4 << 4) | (b3 << 3) | (b2 << 2) | (b1 << 1) | (b0))
+#define NOTE_BUTTONS_A5  (BUTTONS_TO_NOTE(1,1,1,1,1,1,1,1,1,1,1,1))
+#define NOTE_BUTTONS_Bb5 (BUTTONS_TO_NOTE(1,1,1,1,1,1,1,1,0,1,1,1))
+#define NOTE_BUTTONS_B5  (BUTTONS_TO_NOTE(1,1,1,0,1,1,1,1,1,1,1,1))
+#define NOTE_BUTTONS_C6  (BUTTONS_TO_NOTE(1,1,1,0,1,1,1,1,0,1,1,1))
+#define NOTE_BUTTONS_Db6 (BUTTONS_TO_NOTE(1,1,1,0,1,1,1,1,1,1,1,0))
+#define NOTE_BUTTONS_D6  (BUTTONS_TO_NOTE(1,1,1,0,1,1,1,1,0,1,1,0))
+#define NOTE_BUTTONS_Eb6 (BUTTONS_TO_NOTE(1,1,1,0,1,1,1,1,1,1,0,0))
+#define NOTE_BUTTONS_E6  (BUTTONS_TO_NOTE(1,1,1,0,1,1,1,1,0,1,0,0))
+#define NOTE_BUTTONS_F6  (BUTTONS_TO_NOTE(1,1,1,0,1,1,1,1,0,0,0,0))
+#define NOTE_BUTTONS_Gb6 (BUTTONS_TO_NOTE(1,1,1,0,1,1,1,0,0,0,1,0))
+#define NOTE_BUTTONS_G6  (BUTTONS_TO_NOTE(1,1,1,0,1,1,1,0,0,0,0,0))
+#define NOTE_BUTTONS_Ab6 (BUTTONS_TO_NOTE(1,1,1,0,1,0,1,0,0,0,1,0))
+#define NOTE_BUTTONS_A6  (BUTTONS_TO_NOTE(1,1,1,0,1,0,1,0,0,0,0,0))
+#define NOTE_BUTTONS_Bb6 (BUTTONS_TO_NOTE(1,1,1,0,0,0,1,0,0,0,1,0))
+#define NOTE_BUTTONS_B6  (BUTTONS_TO_NOTE(1,1,1,0,0,0,1,0,0,0,0,0))
+#define NOTE_BUTTONS_C7  (BUTTONS_TO_NOTE(1,1,0,0,0,0,1,0,0,0,0,0))
+#define NOTE_BUTTONS_Db7 (BUTTONS_TO_NOTE(0,1,0,0,0,0,1,0,0,0,1,0))
+#define NOTE_BUTTONS_D7  (BUTTONS_TO_NOTE(0,1,0,0,0,0,1,0,0,0,0,0))
+#define NOTE_BUTTONS_Eb7 (BUTTONS_TO_NOTE(0,0,0,0,0,0,1,0,0,0,1,0))
+#define NOTE_BUTTONS_E7  (BUTTONS_TO_NOTE(0,0,0,0,0,0,1,0,0,0,0,0))
+#define NOTE_BUTTONS_F7  (BUTTONS_TO_NOTE(0,0,0,0,0,0,0,0,0,0,0,0))
+
+enum NoteMidi {
+	NOTE_MIDI_INVAL = 0,
+	NOTE_MIDI_A5   = 69,
+	NOTE_MIDI_Bb5  = 70,
+	NOTE_MIDI_B5   = 71,
+	NOTE_MIDI_C6   = 72,
+	NOTE_MIDI_Db6  = 73,
+	NOTE_MIDI_D6   = 74,
+	NOTE_MIDI_Eb6  = 75,
+	NOTE_MIDI_E6   = 76,
+	NOTE_MIDI_F6   = 77,
+	NOTE_MIDI_Gb6  = 78,
+	NOTE_MIDI_G6   = 79,
+	NOTE_MIDI_Ab6  = 80,
+	NOTE_MIDI_A6   = 81,
+	NOTE_MIDI_Bb6  = 82,
+	NOTE_MIDI_B6   = 83,
+	NOTE_MIDI_C7   = 84,
+	NOTE_MIDI_Db7  = 85,
+	NOTE_MIDI_D7   = 86,
+	NOTE_MIDI_Eb7  = 87,
+	NOTE_MIDI_E7   = 88,
+	NOTE_MIDI_F7   = 89
+};
+
+#define EON_COUNT_MAX 5
+
+
+#ifdef TX
 
 // You can have up to 4 on one i2c bus but one is enough for testing!
 Adafruit_MPR121 cap = Adafruit_MPR121();
 
-// Keeps track of the last pins touched
-// so we know when buttons are 'released'
-uint16_t lasttouched = 0;
-uint16_t currtouched = 0;
-#endif
-
-#ifdef TX
 /* --------- Sensirion CRC-8 (poly 0x31, init 0xFF) --------- */
 static uint8_t sdp_crc8(uint8_t msb, uint8_t lsb)
 {
@@ -145,21 +200,45 @@ static uint16_t read_buttons()
 	return buttons;
 }
 
-/* --------- utils --------- */
-static void print_hex_words(const uint16_t *w, size_t n)
+uint8_t button_to_note(uint16_t buttons)
 {
-	size_t i;
+	static uint8_t last_good_note = NOTE_MIDI_INVAL;
+	uint8_t note;
 
-	for (i = 0; i < n; i++) {
-		Serial.print("  w");
-		Serial.print((int)i);
-		Serial.print(" = 0x");
-		if (w[i] < 0x1000) Serial.print('0');
-		if (w[i] < 0x0100) Serial.print('0');
-		if (w[i] < 0x0010) Serial.print('0');
-		Serial.println(w[i], HEX);
+	switch (buttons) {
+		case NOTE_BUTTONS_A5:  note = NOTE_MIDI_A5;
+		case NOTE_BUTTONS_Bb5: note = NOTE_MIDI_Bb5;
+		case NOTE_BUTTONS_B5:  note = NOTE_MIDI_B5;
+		case NOTE_BUTTONS_C6:  note = NOTE_MIDI_C6;
+		case NOTE_BUTTONS_Db6: note = NOTE_MIDI_Db6;
+		case NOTE_BUTTONS_D6:  note = NOTE_MIDI_D6;
+		case NOTE_BUTTONS_Eb6: note = NOTE_MIDI_Eb6;
+		case NOTE_BUTTONS_E6:  note = NOTE_MIDI_E6;
+		case NOTE_BUTTONS_F6:  note = NOTE_MIDI_F6;
+		case NOTE_BUTTONS_Gb6: note = NOTE_MIDI_Gb6;
+		case NOTE_BUTTONS_G6:  note = NOTE_MIDI_G6;
+		case NOTE_BUTTONS_Ab6: note = NOTE_MIDI_Ab6;
+		case NOTE_BUTTONS_A6:  note = NOTE_MIDI_A6;
+		case NOTE_BUTTONS_Bb6: note = NOTE_MIDI_Bb6;
+		case NOTE_BUTTONS_B6:  note = NOTE_MIDI_B6;
+		case NOTE_BUTTONS_C7:  note = NOTE_MIDI_C7;
+		case NOTE_BUTTONS_Db7: note = NOTE_MIDI_Db7;
+		case NOTE_BUTTONS_D7:  note = NOTE_MIDI_D7;
+		case NOTE_BUTTONS_Eb7: note = NOTE_MIDI_Eb7;
+		case NOTE_BUTTONS_E7:  note = NOTE_MIDI_E7;
+		case NOTE_BUTTONS_F7:  note = NOTE_MIDI_F7;
+		default:               note = NOTE_MIDI_INVAL;
 	}
+
+	if (note == NOTE_MIDI_INVAL) {
+		note = last_good_note;
+	} else {
+		last_good_note = note;
+	}
+
+	return note;
 }
+
 #endif  // TX-only I2C functions
 
 
@@ -258,22 +337,38 @@ void setup(void)
 // ==================== TX IMPLEMENTATION ====================
 void loop(void)
 {
-	static uint32_t t_last = 0;
-	uint32_t now = millis();
-	
-	// Send packets every 50ms
-	if (now - t_last < 50)
-		return;
-	t_last = now;
-	
+	// When pressure is off - send empty packet 5 times to ensure end of note
+	static uint8_t eon_count = EON_COUNT_MAX;
 	SensorPacket packet;
-	packet.pressure = read_pressure();
-	if (packet.pressure == 0)
-		return;
-	packet.buttons = read_buttons();
+	uint16_t buttons;
 	
-	// Send packet
-	bool ok = radio.write(&packet, sizeof(packet));
+	packet.pressure = read_pressure();
+	if (packet.pressure == 0) {
+		if (eon_count > 0) {
+			eon_count--;
+			packet.note = NOTE_MIDI_INVAL;
+		} else {
+			return;
+		}
+	} else {
+		eon_count = EON_COUNT_MAX;
+		buttons = read_buttons();
+		packet.note = button_to_note(buttons);
+	}
+	
+	radio.write(&packet, sizeof(packet));
+	
+	// Debug output
+	dbg("TX: P=");
+	dbg(packet.pressure);
+	dbg(" Note=");
+	if (packet.note == NOTE_MIDI_INVAL) {
+		dbgln("END");
+	} else {
+		dbgln(packet.note);
+	}
+
+	delay(100);
 }
 
 #else
@@ -289,24 +384,19 @@ void loop(void)
 	// Print received data
 	Serial.print("P=");
 	Serial.print(packet.pressure);
-	Serial.print(" B=0x");
-	Serial.print(packet.buttons, HEX);
+	Serial.print(" Note=");
 	
-	// Print button list
-	Serial.print(" [");
-	bool first = true;
-	for (uint8_t i = 0; i < 12; i++) {
-		if (packet.buttons & (1 << i)) {
-			if (!first) Serial.print(",");
-			Serial.print(i);
-			first = false;
-		}
+	if (packet.note == NOTE_MIDI_INVAL) {
+		Serial.print("END");
+	} else {
+		Serial.print(packet.note);
 	}
-	Serial.println("]");
+	
+	Serial.println();
 	
 	// Brief LED blink on packet received
 	digitalWrite(LED_STATUS, HIGH);
-	delayMicroseconds(100);
+	delay(50);
 	digitalWrite(LED_STATUS, LOW);
 }
 #endif
