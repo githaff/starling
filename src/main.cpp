@@ -1,4 +1,4 @@
-#define TX  // Comment this out for RX device
+//#define TX  // Comment this out for RX device
 
 #include <Arduino.h>
 #include <Wire.h>
@@ -22,7 +22,7 @@ struct SensorPacket {
 #define SERIAL_BAUD 115200
 
 //#define AWAIT_SERIAL
-#define DEBUG
+//#define DEBUG
 
 // Debug macros - only compile when DEBUG is defined
 #ifdef DEBUG
@@ -32,11 +32,6 @@ struct SensorPacket {
 	#define dbg(x)
 	#define dbgln(x)
 #endif
-
-//#ifndef _BV
-//#define _BV(bit) (1 << (bit)) 
-//#endif
-
 
 // TX-only: I2C sensors
 #define SDP_ADDR 0x25    /* 7-bit I2C address */
@@ -206,35 +201,35 @@ uint8_t button_to_note(uint16_t buttons)
 	uint8_t note;
 
 	switch (buttons) {
-		case NOTE_BUTTONS_A5:  note = NOTE_MIDI_A5;
-		case NOTE_BUTTONS_Bb5: note = NOTE_MIDI_Bb5;
-		case NOTE_BUTTONS_B5:  note = NOTE_MIDI_B5;
-		case NOTE_BUTTONS_C6:  note = NOTE_MIDI_C6;
-		case NOTE_BUTTONS_Db6: note = NOTE_MIDI_Db6;
-		case NOTE_BUTTONS_D6:  note = NOTE_MIDI_D6;
-		case NOTE_BUTTONS_Eb6: note = NOTE_MIDI_Eb6;
-		case NOTE_BUTTONS_E6:  note = NOTE_MIDI_E6;
-		case NOTE_BUTTONS_F6:  note = NOTE_MIDI_F6;
-		case NOTE_BUTTONS_Gb6: note = NOTE_MIDI_Gb6;
-		case NOTE_BUTTONS_G6:  note = NOTE_MIDI_G6;
-		case NOTE_BUTTONS_Ab6: note = NOTE_MIDI_Ab6;
-		case NOTE_BUTTONS_A6:  note = NOTE_MIDI_A6;
-		case NOTE_BUTTONS_Bb6: note = NOTE_MIDI_Bb6;
-		case NOTE_BUTTONS_B6:  note = NOTE_MIDI_B6;
-		case NOTE_BUTTONS_C7:  note = NOTE_MIDI_C7;
-		case NOTE_BUTTONS_Db7: note = NOTE_MIDI_Db7;
-		case NOTE_BUTTONS_D7:  note = NOTE_MIDI_D7;
-		case NOTE_BUTTONS_Eb7: note = NOTE_MIDI_Eb7;
-		case NOTE_BUTTONS_E7:  note = NOTE_MIDI_E7;
-		case NOTE_BUTTONS_F7:  note = NOTE_MIDI_F7;
+		case NOTE_BUTTONS_A5:  note = NOTE_MIDI_A5;  break;
+		case NOTE_BUTTONS_Bb5: note = NOTE_MIDI_Bb5; break;
+		case NOTE_BUTTONS_B5:  note = NOTE_MIDI_B5;  break;
+		case NOTE_BUTTONS_C6:  note = NOTE_MIDI_C6;  break;
+		case NOTE_BUTTONS_Db6: note = NOTE_MIDI_Db6; break;
+		case NOTE_BUTTONS_D6:  note = NOTE_MIDI_D6;  break;
+		case NOTE_BUTTONS_Eb6: note = NOTE_MIDI_Eb6; break;
+		case NOTE_BUTTONS_E6:  note = NOTE_MIDI_E6;  break;
+		case NOTE_BUTTONS_F6:  note = NOTE_MIDI_F6;  break;
+		case NOTE_BUTTONS_Gb6: note = NOTE_MIDI_Gb6; break;
+		case NOTE_BUTTONS_G6:  note = NOTE_MIDI_G6;  break;
+		case NOTE_BUTTONS_Ab6: note = NOTE_MIDI_Ab6; break;
+		case NOTE_BUTTONS_A6:  note = NOTE_MIDI_A6;  break;
+		case NOTE_BUTTONS_Bb6: note = NOTE_MIDI_Bb6; break;
+		case NOTE_BUTTONS_B6:  note = NOTE_MIDI_B6;  break;
+		case NOTE_BUTTONS_C7:  note = NOTE_MIDI_C7;  break;
+		case NOTE_BUTTONS_Db7: note = NOTE_MIDI_Db7; break;
+		case NOTE_BUTTONS_D7:  note = NOTE_MIDI_D7;  break;
+		case NOTE_BUTTONS_Eb7: note = NOTE_MIDI_Eb7; break;
+		case NOTE_BUTTONS_E7:  note = NOTE_MIDI_E7;  break;
+		case NOTE_BUTTONS_F7:  note = NOTE_MIDI_F7;  break;
 		default:               note = NOTE_MIDI_INVAL;
 	}
 
-	if (note == NOTE_MIDI_INVAL) {
-		note = last_good_note;
-	} else {
-		last_good_note = note;
-	}
+//	if (note == NOTE_MIDI_INVAL) {
+//		note = last_good_note;
+//	} else {
+//		last_good_note = note;
+//	}
 
 	return note;
 }
@@ -284,7 +279,6 @@ void setup(void)
 		digitalWrite(LED_STATUS, LOW);
 		delay(50);
 	}
-	digitalWrite(LED_STATUS, HIGH);
 
 	Serial.begin(SERIAL_BAUD);
 #ifdef AWAIT_SERIAL
@@ -301,13 +295,16 @@ void setup(void)
 		digitalWrite(LED_STATUS, LOW);
 		delay(50);
 	}
-	digitalWrite(LED_STATUS, HIGH);
 #endif
+
+	Serial.println("Ready");
 
 #ifdef TX
 	/* I2C - only needed for TX */
 	Wire.begin();
 	Wire.setClock(I2C_HZ);
+
+	delay(3000);
 
 	/* Initialize SDP pressure sensor */
 	if (!sdp_write_cmd(CMD_ENTER_MODE, false) ||
@@ -321,6 +318,7 @@ void setup(void)
 	}
 
 	/* Initialize MPR121 capacitive touch sensor */
+	digitalWrite(LED_STATUS, HIGH);
 	if (!cap.begin(0x5A)) {
 		Serial.println("MPR121 not found!");
 		while (1);
@@ -331,12 +329,22 @@ void setup(void)
 
 	radio_init();
 	Serial.println("Ready");
+
+	delay(2000);
+	for (int i = 0; i < 5; i++) {
+		digitalWrite(LED_STATUS, HIGH);
+		delay(200);
+		digitalWrite(LED_STATUS, LOW);
+		delay(200);
+	}
+	digitalWrite(LED_STATUS, LOW);
 }
 
 #ifdef TX
 // ==================== TX IMPLEMENTATION ====================
 void loop(void)
 {
+	static uint8_t cnt = 0;
 	// When pressure is off - send empty packet 5 times to ensure end of note
 	static uint8_t eon_count = EON_COUNT_MAX;
 	SensorPacket packet;
@@ -357,18 +365,12 @@ void loop(void)
 	}
 	
 	radio.write(&packet, sizeof(packet));
-	
-	// Debug output
-	dbg("TX: P=");
-	dbg(packet.pressure);
-	dbg(" Note=");
-	if (packet.note == NOTE_MIDI_INVAL) {
-		dbgln("END");
-	} else {
-		dbgln(packet.note);
+	if (cnt == 0) {
+		digitalWrite(LED_STATUS, HIGH);
+	} else if (cnt == 128) {
+		digitalWrite(LED_STATUS, LOW);
 	}
-
-	delay(100);
+	cnt++;
 }
 
 #else
@@ -394,9 +396,9 @@ void loop(void)
 	
 	Serial.println();
 	
-	// Brief LED blink on packet received
-	digitalWrite(LED_STATUS, HIGH);
-	delay(50);
-	digitalWrite(LED_STATUS, LOW);
+//	// Brief LED blink on packet received
+//	digitalWrite(LED_STATUS, HIGH);
+//	delay(50);
+//	digitalWrite(LED_STATUS, LOW);
 }
 #endif
